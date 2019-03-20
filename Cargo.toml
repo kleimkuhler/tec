@@ -1,0 +1,10 @@
+[package]
+name = "tec"
+version = "0.1.0"
+authors = ["Kevin Leimkuhler <kevinl@buoyant.io>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.1"
+tokio = "0.1.17"
+tokio-timer = "0.2"
