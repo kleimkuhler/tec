@@ -16,7 +16,18 @@
 /// - scheduling itself to be polled in the near future if it fails.
 ///
 /// Access to cache values is maintained through handles to `Access`. `Access`
-/// wraps a `Node` and a delay queue of expirations. `Node` allows
+/// wraps a `Node` and a delay queue `expirations`. `Node` provides access to an
+/// actual cache value.
+///
+/// The reason a handle is provided to the cache value is because there may be
+/// ongoing access to the value and we want to make sure it is not purged from
+/// the cache by `PurgeCache`. When the handle is dropped, `Access` resets the
+/// cache value in the delay queue `expirations`.
+///
+/// Similarly, we want to be able to add values to the cache, but the value may
+/// not be ready yet. We handle this situation with `Reserve`. `Reserve`
+/// represents a handle to a cache that has capacity for at least one additional
+/// value.
 extern crate tokio;
 extern crate tokio_timer;
 
