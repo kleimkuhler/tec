@@ -1,4 +1,22 @@
-/// Test doc comments
+/// This mocks a generic container that wraps a cache.
+///
+/// There are two structs that wrap containers - a `Container` and a
+/// `PurgeCache`.
+///
+/// `Container` can represent some object that would contain a cache, such as a
+/// router that maintains a cache of services.
+///
+/// `PurgeCache` contains a cache and implements `Future` so that it can be
+/// polled as a background task and purge values from the cache when it is able
+/// to.
+///
+/// Both `Container` and `PurgeCache` contend for a `Mutex` that wraps a single
+/// cache. `Container` has priority to locking the cache. This is ensured by
+/// `Container` blocking when acquiring a lock, and `PurgeCache` trying to lock
+/// - scheduling itself to be polled in the near future if it fails.
+///
+/// Access to cache values is maintained through handles to `Access`. `Access`
+/// wraps a `Node` and a delay queue of expirations. `Node` allows
 extern crate tokio;
 extern crate tokio_timer;
 
@@ -35,13 +53,13 @@ pub struct PurgeCache {
 /// Wrap a cache node so that a lock is held on the entire cache. When the
 /// access is dropped, reset the cache node so that it is not purged.
 pub struct Access<'a> {
+    expires: Duration,
     expirations: &'a mut DelayQueue<usize>,
     node: &'a mut Node,
 }
 
 /// This is the handle to a cache value.
 pub struct Node {
-    expires: Duration,
     key: delay_queue::Key,
     value: usize,
 }
@@ -89,6 +107,7 @@ impl Cache {
     pub fn access(&mut self, key: &usize) -> Option<Access> {
         let node = self.vals.get_mut(key)?;
         Some(Access {
+            expires: self.expires,
             expirations: &mut self.expirations,
             node,
         })
@@ -183,19 +202,15 @@ impl Future for PurgeCache {
 
 impl<'a> Drop for Access<'a> {
     fn drop(&mut self) {
-        self.expirations.reset(&self.node.key, self.node.expires);
+        self.expirations.reset(&self.node.key, self.expires);
     }
 }
 
 // ===== impl Node =====
 
 impl Node {
-    pub fn new(expires: Duration, key: delay_queue::Key, value: usize) -> Self {
-        Node {
-            expires,
-            key,
-            value,
-        }
+    pub fn new(key: delay_queue::Key, value: usize) -> Self {
+        Node { key, value }
     }
 }
 
@@ -205,7 +220,7 @@ impl<'a> Reserve<'a> {
     pub fn store(self, key: usize, val: usize) {
         let node = {
             let delay = self.expirations.insert(key, self.expires);
-            Node::new(self.expires, delay, val)
+            Node::new(delay, val)
         };
         self.vals.insert(key, node);
     }
