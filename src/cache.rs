@@ -1,3 +1,4 @@
+/// Test doc comments
 extern crate tokio;
 extern crate tokio_timer;
 
@@ -156,8 +157,15 @@ impl Future for PurgeCache {
             None => return Ok(Async::Ready(())),
         };
         let mut cache = match lock.try_lock() {
+            // If we can lock the cache then do so
             Ok(lock) => lock,
+
+            // If we were unable to lock the cache, panic if the cause of error
+            // was a poisoned lock
             Err(TryLockError::Poisoned(e)) => panic!("lock poisoned: {:?}", e),
+
+            // If the lock is not poisoned, it is being held by another
+            // thread. Schedule this thread to be polled in the near future.
             Err(_) => {
                 futures::task::current().notify();
                 return Ok(Async::NotReady);
@@ -243,6 +251,9 @@ mod tests {
         cache.reserve().expect("reserve").store(2, 3);
         assert!(cache.access(&1).is_some());
         assert!(cache.access(&2).is_some());
+
+        assert_eq!(cache.access(&1).take().unwrap().node.value, 2);
+        assert_eq!(cache.access(&2).take().unwrap().node.value, 3);
     }
 
     #[test]
@@ -263,6 +274,8 @@ mod tests {
         tokio::run(futures::lazy(|| {
             let (container, _cache_purge) = Container::new(2, Duration::from_millis(10));
 
+            // Do not spawn background purge. Instead, fill the cache and
+            // force a manual purge to occur when a value can be expired.
             {
                 let mut cache = container.cache.lock().unwrap();
 
@@ -271,6 +284,8 @@ mod tests {
                 assert_eq!(cache.vals.len(), 2);
             }
 
+            // Sleep for an amount of time greater than expiry duration so
+            // that a value can be purged.
             tokio::spawn(
                 tokio_timer::sleep(Duration::from_millis(100))
                     .map(move |_| {
@@ -292,6 +307,7 @@ mod tests {
         tokio::run(futures::lazy(|| {
             let (container, cache_purge) = Container::new(2, Duration::from_millis(10));
 
+            // Spawn a background purge
             tokio::spawn(cache_purge);
 
             {
@@ -302,6 +318,8 @@ mod tests {
                 assert_eq!(cache.vals.len(), 2);
             }
 
+            // Sleep for an amount of time greater than expiry duration so
+            // that the background purge purges the entire cache.
             tokio::spawn(
                 tokio_timer::sleep(Duration::from_millis(100))
                     .map(move |_| {
@@ -322,6 +340,7 @@ mod tests {
 
         let (container, cache_purge) = Container::new(2, Duration::from_millis(10));
 
+        // Spawn a background purge on the current runtime
         runtime.spawn(cache_purge);
 
         let mut cache = container.cache.lock().unwrap();
@@ -330,19 +349,31 @@ mod tests {
         assert!(cache.access(&1).is_some());
         let access = cache.access(&1);
 
+        // Sleep for an amount of time greater than the expiry duration so
+        // that the background purge would purge the cache iff values can
+        // be expired.
         runtime
             .block_on(tokio_timer::sleep(Duration::from_millis(100)))
             .unwrap();
 
+        // Explicity drop both the access and cache handles. Dropping the
+        // access handle will reset the expiration on the value in the cache.
+        // Dropping the cache handle will unlock the cache and allow a
+        // background purge to occur.
         drop(access);
         drop(cache);
 
+        // Ensure a background purge is polled so that it can expire any
+        // values.
         runtime
             .block_on(tokio_timer::sleep(Duration::from_millis(1)))
             .unwrap();
 
         let mut cache = container.cache.lock().unwrap();
 
+        // The cache value should still be present since it was reset after
+        // the value expiration. We ensured a background purge occurred but
+        // that it did not purge the value.
         assert!(cache.access(&1).is_some());
     }
 }
