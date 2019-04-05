@@ -34,6 +34,7 @@ extern crate tokio_timer;
 use futures::{Async, Future, Poll, Stream};
 use std::{
     collections::HashMap,
+    hash::Hash,
     sync::{Arc, Mutex, TryLockError, Weak},
     time::Duration,
 };
@@ -43,36 +44,36 @@ use tokio::timer::{delay_queue, DelayQueue, Error, Interval};
 ///
 /// An example of what a container may represent is a Router that contains
 /// a cache of recently used services.
-pub struct Container {
-    cache: Arc<Mutex<Cache>>,
+pub struct Container<K: Clone + Eq + Hash, V> {
+    cache: Arc<Mutex<Cache<K, V>>>,
 }
 
 /// An LRU cache that is purged by a background purge task.
-pub struct Cache {
+pub struct Cache<K: Clone + Eq + Hash, V> {
     capacity: usize,
     expires: Duration,
-    expirations: DelayQueue<usize>,
-    vals: HashMap<usize, Node>,
+    expirations: DelayQueue<K>,
+    vals: HashMap<K, Node<V>>,
 }
 
 /// Purge a cache at a set interval.
-pub struct PurgeCache {
-    cache: Weak<Mutex<Cache>>,
+pub struct PurgeCache<K: Clone + Eq + Hash, V> {
+    cache: Weak<Mutex<Cache<K, V>>>,
     interval: Interval,
 }
 
 /// Wrap a cache node so that a lock is held on the entire cache. When the
 /// access is dropped, reset the cache node so that it is not purged.
-pub struct Access<'a> {
+pub struct Access<'a, K: Clone + Eq + Hash, V> {
     expires: Duration,
-    expirations: &'a mut DelayQueue<usize>,
-    node: &'a mut Node,
+    expirations: &'a mut DelayQueue<K>,
+    node: &'a mut Node<V>,
 }
 
 /// This is the handle to a cache value.
-pub struct Node {
+pub struct Node<T> {
     key: delay_queue::Key,
-    value: usize,
+    value: T,
 }
 
 #[derive(Debug, PartialEq)]
@@ -81,16 +82,16 @@ pub struct CapacityExhausted {
 }
 
 /// A handle to a cache that has capacity for at least one additional value.
-pub struct Reserve<'a> {
-    expirations: &'a mut DelayQueue<usize>,
+pub struct Reserve<'a, K: Clone + Eq + Hash, V> {
+    expirations: &'a mut DelayQueue<K>,
     expires: Duration,
-    vals: &'a mut HashMap<usize, Node>,
+    vals: &'a mut HashMap<K, Node<V>>,
 }
 
 // ===== impl Container =====
 
-impl Container {
-    pub fn new(capacity: usize, expires: Duration) -> (Self, PurgeCache) {
+impl<K: Clone + Eq + Hash, V> Container<K, V> {
+    pub fn new(capacity: usize, expires: Duration) -> (Self, PurgeCache<K, V>) {
         let container = Self {
             cache: Arc::new(Mutex::new(Cache::new(capacity, expires))),
         };
@@ -105,7 +106,7 @@ impl Container {
 
 // ===== impl Cache =====
 
-impl Cache {
+impl<K: Clone + Eq + Hash, V> Cache<K, V> {
     pub fn new(capacity: usize, expires: Duration) -> Self {
         Self {
             capacity,
@@ -115,7 +116,7 @@ impl Cache {
         }
     }
 
-    pub fn access(&mut self, key: &usize) -> Option<Access> {
+    pub fn access(&mut self, key: &K) -> Option<Access<K, V>> {
         let node = self.vals.get_mut(key)?;
         Some(Access {
             expires: self.expires,
@@ -124,7 +125,7 @@ impl Cache {
         })
     }
 
-    pub fn reserve(&mut self) -> Result<Reserve, CapacityExhausted> {
+    pub fn reserve(&mut self) -> Result<Reserve<K, V>, CapacityExhausted> {
         if self.vals.len() == self.capacity {
             match self.expirations.poll() {
                 // The cache is at capacity but we are able to remove a value.
@@ -171,7 +172,7 @@ impl Cache {
 
 // ===== impl PurgeCache =====
 
-impl Future for PurgeCache {
+impl<K: Clone + Eq + Hash, V> Future for PurgeCache<K, V> {
     type Item = ();
 
     type Error = ();
@@ -211,7 +212,7 @@ impl Future for PurgeCache {
 
 // ===== impl Access =====
 
-impl<'a> Drop for Access<'a> {
+impl<'a, K: Clone + Eq + Hash, V> Drop for Access<'a, K, V> {
     fn drop(&mut self) {
         self.expirations.reset(&self.node.key, self.expires);
     }
@@ -219,18 +220,18 @@ impl<'a> Drop for Access<'a> {
 
 // ===== impl Node =====
 
-impl Node {
-    pub fn new(key: delay_queue::Key, value: usize) -> Self {
+impl<T> Node<T> {
+    pub fn new(key: delay_queue::Key, value: T) -> Self {
         Node { key, value }
     }
 }
 
 // ===== impl Reserve =====
 
-impl<'a> Reserve<'a> {
-    pub fn store(self, key: usize, val: usize) {
+impl<'a, K: Clone + Eq + Hash, V> Reserve<'a, K, V> {
+    pub fn store(self, key: K, val: V) {
         let node = {
-            let delay = self.expirations.insert(key, self.expires);
+            let delay = self.expirations.insert(key.clone(), self.expires);
             Node::new(delay, val)
         };
         self.vals.insert(key, node);
